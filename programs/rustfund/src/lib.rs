@@ -25,6 +25,7 @@ pub mod rustfund {
     pub fn contribute(ctx: Context<FundContribute>, amount: u64) -> Result<()> {
         let fund = &mut ctx.accounts.fund;
         let contribution = &mut ctx.accounts.contribution;
+        //@Audit: no check for value of amount, it should be greater than 0
         
         if fund.deadline != 0 && fund.deadline < Clock::get().unwrap().unix_timestamp.try_into().unwrap() {
             return Err(ErrorCode::DeadlineReached.into());
@@ -34,6 +35,7 @@ pub mod rustfund {
         if contribution.contributor == Pubkey::default() {
             contribution.contributor = ctx.accounts.contributor.key();
             contribution.fund = fund.key();
+            // @Audit: This amount should reflect the non-zero amount contributed
             contribution.amount = 0;
         }
         
@@ -48,23 +50,34 @@ pub mod rustfund {
         system_program::transfer(cpi_context, amount)?;
         
        fund.amount_raised += amount;
+       //@Audit: did not update the contribution amount
+    //  contribution.amount += amount;
         Ok(())
     }
     
 
     pub fn set_deadline(ctx: Context<FundSetDeadline>, deadline: u64) -> Result<()> {
+        //@Audit: No authorization check for the creator, should throw UnauthorizedAccess error if creator is not the caller
+        //add access control below
+        if ctx.accounts.creator.key() != ctx.accounts.fund.creator {
+            return Err(ErrorCode::UnauthorizedAccess.into());
+        }
         let fund = &mut ctx.accounts.fund;
         if fund.dealine_set {
             return Err(ErrorCode::DeadlineAlreadySet.into());
         }
-        
+        //@Audit: Deadline should be greater than the current time
+        if deadline < Clock::get().unwrap().unix_timestamp.try_into().unwrap() {
+            return Err(ErrorCode::DeadlineReached.into());
+        }
         fund.deadline = deadline;
+        //@Audit: deadline_set should be set to true
         Ok(())
     }
 
 
     pub fn refund(ctx: Context<FundRefund>) -> Result<()> {
-  
+        //@Audit - reentrancy attack possible, should set the amount to 0 before transferring the funds
         let amount = ctx.accounts.contribution.amount;
         if ctx.accounts.fund.deadline != 0 && ctx.accounts.fund.deadline > Clock::get().unwrap().unix_timestamp.try_into().unwrap() {
             return Err(ErrorCode::DeadlineNotReached.into());  
@@ -88,6 +101,19 @@ pub mod rustfund {
     }
 
     pub fn withdraw(ctx: Context<FundWithdraw>) -> Result<()> {
+        //@Audit: No authorization check for the creator, should throw UnauthorizedAccess error if creator is not the caller
+        //add the access control
+        if ctx.accounts.creator.key() != ctx.accounts.fund.creator {
+            return Err(ErrorCode::UnauthorizedAccess.into());
+        }
+        //@AUdit: No check for deadline, should throw DeadlineNotReached error if deadline is not reached
+        if ctx.accounts.fund.deadline != 0 && ctx.accounts.fund.deadline > Clock::get().unwrap().unix_timestamp.try_into().unwrap() {
+            return Err(ErrorCode::DeadlineNotReached.into());  
+        }
+        //@Audit: the owner is able to withdraw funds regardless of whether the goal is reached or not
+        if ctx.accounts.fund.amount_raised < ctx.accounts.fund.goal {
+            return Err(ProgramError::InsufficientFunds.into());
+        }
         let amount = ctx.accounts.fund.amount_raised;
         
         **ctx.accounts.fund.to_account_info().try_borrow_mut_lamports()? = 
